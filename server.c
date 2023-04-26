@@ -2,13 +2,18 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <string.h>
 #include <pthread.h>
-// #include <signal.h>
+#include <signal.h>
 
 #define MAX_CLIENTS 10
-#define MAX_USERNAME_LENGTH 24
-#define MAX_MESSAGE_LENGTH 1024
+// #define MAX_MESSAGE_LENGTH 1024
+// #define MAX_USERNAME_LENGTH 24
+
+#define LENGTH_NAME 31
+#define LENGTH_MSG 101
+#define LENGTH_SEND 201
 
 typedef struct ClientNode {
   int data;
@@ -30,69 +35,96 @@ ClientList *newNode(int sockfd, char* ip) {
 }
 
 // Global
-int client_fds[MAX_CLIENTS] = {0};
-int num_clients = 0;
+// int server_fd = 0;
+// int client_fd = 0;
+// int client_fds[MAX_CLIENTS] = {};
+// int num_clients = 0;
 pthread_mutex_t client_fds_mutex = PTHREAD_MUTEX_INITIALIZER;
+int server_sockfd = 0, client_sockfd = 0;
+ClientList *root, *now;
 
-// Function to broadcast message to all connected clients
-void broadcast_message(char *message, int sender_fd) {
-  pthread_mutex_lock(&client_fds_mutex);
-  for (int i = 0; i < MAX_CLIENTS; i++) {
-    int client_fd = client_fds[i];
-    if (client_fd != 0 && client_fd != sender_fd) {
-      send(client_fd, message, strlen(message), 0);
-    }
+void catch_ctrl_c_and_exit(int sig) {
+  ClientList *tmp;
+  while (root != NULL) {
+    printf("\nClose socketfd: %d\n", root->data);
+    close(root->data); // close all socket include server_sockfd
+    tmp = root;
+    root = root->link;
+    free(tmp);
   }
-  pthread_mutex_unlock(&client_fds_mutex);
+  printf("Bye\n");
+  exit(EXIT_SUCCESS);
 }
 
-// Function to handle incoming messages from a client
-void *client_handler(void *arg) {
-  int client_fd = *(int *)arg;
-  char username[MAX_USERNAME_LENGTH] = {};
-  int username_length = recv(client_fd, username, MAX_USERNAME_LENGTH, 0);
-  if (username_length <= 0) {
-    printf("Error: failed to get client username\n");
-    return NULL;
+void send_to_all_clients(ClientList *np, char tmp_buffer[]) {
+  ClientList *tmp = root->link;
+  while (tmp != NULL) {
+    if (np->data != tmp->data) { // all clients except itself.
+      printf("Send to sockfd %d: \"%s\" \n", tmp->data, tmp_buffer);
+      send(tmp->data, tmp_buffer, LENGTH_SEND, 0);
+    }
+    tmp = tmp->link;
   }
-  printf("Client %s connected\n", username);
-  char connected_message[MAX_MESSAGE_LENGTH] = {};
-  snprintf(connected_message, MAX_MESSAGE_LENGTH, "%s connected to the server", username);
-  broadcast_message(connected_message, client_fd);
+}
 
-  char received_message[MAX_MESSAGE_LENGTH] = {};
+void client_handler(void *p_client) {
+  int leave_flag = 0;
+  char nickname[LENGTH_NAME] = {};
+  char recv_buffer[LENGTH_MSG] = {};
+  char send_buffer[LENGTH_SEND] = {};
+  ClientList *np = (ClientList *)p_client;
+
+  // Naming
+  if (recv(np->data, nickname, LENGTH_NAME, 0) <= 0 || strlen(nickname) < 2 || strlen(nickname) >= LENGTH_NAME-1) {
+    printf("%s didn't input name.\n", np->ip);
+    leave_flag = 1;
+  } else {
+    strncpy(np->name, nickname, LENGTH_NAME);
+    printf("%s(%s)(%d) join the chatroom.\n", np->name, np->ip, np->data);
+    sprintf(send_buffer, "%s(%s) join the chatroom.", np->name, np->ip);
+    send_to_all_clients(np, send_buffer);
+  }
+
+  // Conversation
   while (1) {
-    int receive = recv(client_fd, received_message, MAX_MESSAGE_LENGTH, 0);
-    if (receive <= 0) {
-      printf("Client %s disconnected\n", username);
-      char disconnected_message[MAX_MESSAGE_LENGTH] = {};
-      snprintf(disconnected_message, MAX_MESSAGE_LENGTH, "%s disconnected from the server", username);
-      broadcast_message(disconnected_message, client_fd);
+    if (leave_flag) {
       break;
     }
-    printf("Received message from %s: %s\n", username, received_message);
-    char message_to_broadcast[MAX_MESSAGE_LENGTH + MAX_USERNAME_LENGTH] = {};
-    snprintf(message_to_broadcast, MAX_MESSAGE_LENGTH + MAX_USERNAME_LENGTH, "%s: %s", username, received_message);
-    broadcast_message(message_to_broadcast, client_fd);
-    memset(received_message, 0, MAX_MESSAGE_LENGTH);
-  }
-  pthread_mutex_lock(&client_fds_mutex);
-  for (int i = 0; i < MAX_CLIENTS; i++) {
-    if (client_fds[i] == client_fd) {
-      client_fds[i] = 0;
-      break;
+    int receive = recv(np->data, recv_buffer, LENGTH_MSG, 0);
+    if (receive > 0) {
+      if (strlen(recv_buffer) == 0) {
+        continue;
+      }
+      sprintf(send_buffer, "%s (%s)：%s", np->name, np->ip, recv_buffer);
+    } else if (receive == 0 || strcmp(recv_buffer, "exit") == 0) {
+      printf("%s(%s)(%d) leave the chatroom.\n", np->name, np->ip, np->data);
+      sprintf(send_buffer, "%s(%s) leave the chatroom.", np->name, np->ip);
+      leave_flag = 1;
+    } else {
+      printf("Fatal Error: -1\n");
+      leave_flag = 1;
     }
+    send_to_all_clients(np, send_buffer);
   }
-  num_clients--;
-  pthread_mutex_unlock(&client_fds_mutex);
-  close(client_fd);
-  return NULL;
+
+  // Remove Node
+  close(np->data);
+  if (np == now) { // remove an edge node
+    now = np->prev;
+    now->link = NULL;
+  } else { // remove a middle node
+    np->prev->link = np->link;
+    np->link->prev = np->prev;
+  }
+  free(np);
 }
 
 int main() {
-  // Create a socket for the server
-  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (server_fd == -1) {
+  signal(SIGINT, catch_ctrl_c_and_exit);
+
+  // Create socket
+  server_sockfd = socket(AF_INET , SOCK_STREAM , 0);
+  if (server_sockfd == -1) {
     printf("Fail to create a socket.");
     exit(EXIT_FAILURE);
   }
@@ -108,50 +140,37 @@ int main() {
   server_info.sin_port = htons(8888);
 
   // Bind and Listen
-  int bind_result = bind(server_fd, (struct sockaddr *)&server_info, s_addrlen);
-  if (bind_result < 0) {
-    perror("Error: bind failed");
-    exit(EXIT_FAILURE);
-  }
-  listen(server_fd, 5);
+  bind(server_sockfd, (struct sockaddr *)&server_info, s_addrlen);
+  listen(server_sockfd, 5);
 
+  // Print Server IP
+  getsockname(server_sockfd, (struct sockaddr*) &server_info, (socklen_t*) &s_addrlen);
+  printf("Start Server on: %s:%d\n", inet_ntoa(server_info.sin_addr), ntohs(server_info.sin_port));
 
-
-
-  // Bind the socket to a specific port
-  struct sockaddr_in address;
-  // set struct to 0 bytes (to 0 out the unused fields)
-  memset(&address, 0, sizeof(struct sockaddr_in));
-  // Set 3 address structure members
-  address.sin_family = AF_INET; // addr type is Internet (IPv4)
-  address.sin_addr.s_addr = INADDR_ANY; // bind to any local address
-  address.sin_port = htons(8080);
-
-  int addrlen = sizeof(address);
-
-
-  // Listen for incoming connections
-  listen(server_fd, 3);
-
-  // Accept incoming connections
-  int new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
-
-  // Send data to the client
-  // char* message = "Welcome to the server\n";
-  // send(new_socket, message, strlen(message), 0);
+  // Initial linked list for clients
+  root = newNode(server_sockfd, inet_ntoa(server_info.sin_addr));
+  now = root;
 
   while (1) {
-    // Receive data from the client
-    char buffer[1024] = {0};
-    int valread = recv(new_socket, buffer, 1024, 0);
-    if (valread == 0) {
-      printf("Client disconnected\n");
-      break;
+    client_sockfd = accept(server_sockfd, (struct sockaddr*) &client_info, (socklen_t*) &c_addrlen);
+
+    // Print Client IP
+    getpeername(client_sockfd, (struct sockaddr*) &client_info, (socklen_t*) &c_addrlen);
+    printf("Client %s:%d come in.\n", inet_ntoa(client_info.sin_addr), ntohs(client_info.sin_port));
+
+    // Append linked list for clients
+    ClientList *c = newNode(client_sockfd, inet_ntoa(client_info.sin_addr));
+    c->prev = now;
+    now->link = c;
+    now = c;
+
+    pthread_t id;
+    if (pthread_create(&id, NULL, (void *)client_handler, (void *)c) != 0) {
+      perror("Create pthread error!\n");
+      exit(EXIT_FAILURE);
     }
-    printf("Client: %s", buffer);
-
   }
-
 
   return 0;
 }
+

@@ -7,12 +7,15 @@
 #include <pthread.h>
 #include <signal.h>
 
-#define MAX_USERNAME_LENGTH 24
-#define MAX_MESSAGE_LENGTH 1024
+// #define MAX_USERNAME_LENGTH 24
+// #define MAX_MESSAGE_LENGTH 1024
+#define LENGTH_NAME 31
+#define LENGTH_MSG 101
+#define LENGTH_SEND 201
 
 // Global
 volatile sig_atomic_t is_exit = 0;
-char username[MAX_USERNAME_LENGTH] = {};
+char username[LENGTH_NAME] = {};
 int client_fd = 0;
 
 void catch_ctrl_c_and_exit(int sig) {
@@ -26,14 +29,14 @@ void str_overwrite_stdout() {
 
 // Function to handle sending messages to the server
 void send_message_handler() {
-  char message[MAX_MESSAGE_LENGTH] = {};
+  char send_message[LENGTH_MSG] = {};
   while(1) {
     str_overwrite_stdout();
-    while (fgets(message, MAX_MESSAGE_LENGTH, stdin) != NULL) {
+    while (fgets(send_message, LENGTH_MSG, stdin) != NULL) {
       // Remove the newline character from the message
-      message[strcspn(message, "\n")] = '\0';
+      send_message[strcspn(send_message, "\n")] = '\0';
       // ignore empty message
-      if (strlen(message) == 0) {
+      if (strlen(send_message) == 0) {
         str_overwrite_stdout();
       }
       else {
@@ -41,8 +44,8 @@ void send_message_handler() {
       }
     }
     // Send the message to the server
-    send(client_fd, message, MAX_MESSAGE_LENGTH, 0);
-    if (strcmp(message, "exit") == 0) {
+    send(client_fd, send_message, LENGTH_MSG, 0);
+    if (strcmp(send_message, "exit") == 0) {
       break;
     }
   }
@@ -51,9 +54,9 @@ void send_message_handler() {
 
 // Function to handle receiving messages from the server
 void receive_message_handler() {
-  char received_message[MAX_MESSAGE_LENGTH] = {};
+  char received_message[LENGTH_SEND] = {};
   while(1) {
-    int receive = recv(client_fd, received_message, MAX_MESSAGE_LENGTH, 0);
+    int receive = recv(client_fd, received_message, LENGTH_SEND, 0);
     if (receive > 0) {
       printf("\r%s\n", received_message);
       str_overwrite_stdout();
@@ -70,11 +73,11 @@ int main() {
   signal(SIGINT, catch_ctrl_c_and_exit);
 
   printf("Please enter your name: ");
-  fgets(username, MAX_USERNAME_LENGTH, stdin);
+  fgets(username, LENGTH_NAME, stdin);
   // Remove the newline character from the username
   username[strcspn(username, "\n")] = '\0';
-  if (strlen(username) < 2 || strlen(username) >= MAX_USERNAME_LENGTH - 1) {
-    printf("\nUsername must be more than one and less than %d characters.\n", MAX_USERNAME_LENGTH);
+  if (strlen(username) < 2 || strlen(username) >= LENGTH_NAME - 1) {
+    printf("\nUsername must be more than one and less than %d characters.\n", LENGTH_NAME);
     exit(EXIT_FAILURE);
   }
 
@@ -111,7 +114,7 @@ int main() {
   printf("Connect to Server: %s:%d\n", inet_ntoa(server_info.sin_addr), ntohs(server_info.sin_port));
   printf("You are: %s:%d\n", inet_ntoa(client_info.sin_addr), ntohs(client_info.sin_port));
 
-  send(client_fd, username, MAX_USERNAME_LENGTH, 0);
+  send(client_fd, username, LENGTH_NAME, 0);
 
   // Create threads for sending and receiving messages
   pthread_t send_thread;
