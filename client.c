@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <signal.h>
+#include <unistd.h>
 
 // #define MAX_USERNAME_LENGTH 24
 // #define MAX_MESSAGE_LENGTH 1024
@@ -16,12 +17,14 @@
 // Global
 volatile sig_atomic_t is_exit = 0;
 char username[LENGTH_NAME] = {};
+char password[LENGTH_NAME] = {};
 int client_fd = 0;
 
-void catch_ctrl_c_and_exit(int sig) {
+void ctrl_c_prompt(int sig) {
   is_exit = 1;
 }
 
+// decoration
 void str_overwrite_stdout() {
   printf("\r%s", "> ");
   fflush(stdout);
@@ -43,13 +46,19 @@ void send_message_handler() {
         break;
       }
     }
-    // Send the message to the server
-    send(client_fd, send_message, LENGTH_MSG, 0);
-    if (strcmp(send_message, "exit") == 0) {
-      break;
+    // Send the message to the server if is not command
+    if (send_message[0] != '\\') {
+      send(client_fd, send_message, LENGTH_MSG, 0);
+    }
+    else {
+      if (send_message[1] == 'q') {
+        break;
+      }
+      printf("invalid command. message cannot start w/ \\\n");
+      str_overwrite_stdout();
     }
   }
-  catch_ctrl_c_and_exit(2);
+  ctrl_c_prompt(2);
 }
 
 // Function to handle receiving messages from the server
@@ -62,6 +71,7 @@ void receive_message_handler() {
       str_overwrite_stdout();
     }
     else if (receive == 0) { // server closed connection
+      is_exit = 1;
       break;
     }
     else { // -1 => error => do nothing
@@ -70,16 +80,12 @@ void receive_message_handler() {
 }
 
 int main() {
-  signal(SIGINT, catch_ctrl_c_and_exit);
+  // Catching Ctrl + C is buggy since the client is constantly reading
+  // the user input
+  // It required Ctrl + C then a message for new line before
+  // the signal handler takes effect
 
-  printf("Please enter your name: ");
-  fgets(username, LENGTH_NAME, stdin);
-  // Remove the newline character from the username
-  username[strcspn(username, "\n")] = '\0';
-  if (strlen(username) < 2 || strlen(username) >= LENGTH_NAME - 1) {
-    printf("\nUsername must be more than one and less than %d characters.\n", LENGTH_NAME);
-    exit(EXIT_FAILURE);
-  }
+  // signal(SIGINT, ctrl_c_prompt);
 
   // Create a socket for the client
   client_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -89,10 +95,6 @@ int main() {
   }
 
   // Connect to the server
-  // struct sockaddr_in server_address;
-  // server_address.sin_family = AF_INET;
-  // server_address.sin_port = htons(8080);
-  // inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr);
   struct sockaddr_in server_info, client_info;
   int server_address_length = sizeof(server_info);
   int client_address_length = sizeof(client_info);
@@ -114,7 +116,25 @@ int main() {
   printf("Connect to Server: %s:%d\n", inet_ntoa(server_info.sin_addr), ntohs(server_info.sin_port));
   printf("You are: %s:%d\n", inet_ntoa(client_info.sin_addr), ntohs(client_info.sin_port));
 
+  // Prompt for the username
+  printf("Please enter your username: ");
+  fgets(username, LENGTH_NAME, stdin);
+  // remove newline character
+  username[strcspn(username, "\n")] = '\0';
+  if (strlen(username) < 2 || strlen(username) >= LENGTH_NAME - 1) {
+    printf("\nUsername must be more than one and less than %d characters.\n", LENGTH_NAME);
+    exit(EXIT_FAILURE);
+  }
+
+  // Prompt for the password
+  printf("Please enter your password: ");
+  fgets(password, LENGTH_NAME, stdin);
+  // remove newline character
+  password[strcspn(password, "\n")] = '\0';
+
   send(client_fd, username, LENGTH_NAME, 0);
+  send(client_fd, password, LENGTH_NAME, 0);
+
 
   // Create threads for sending and receiving messages
   pthread_t send_thread;
@@ -130,6 +150,9 @@ int main() {
 
   while (1) {
     if(is_exit) {
+      // No prompt because it is buggy
+      // If user entered anything other than yes,
+      // the user cannot send any messages after that
       printf("\nBye\n");
       break;
     }
